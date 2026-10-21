@@ -1,0 +1,1224 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW: fixed set of roles (permissions for each role are dynamic, stored in DB)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  AGENT
+  POLICY_ADMINISTRATOR
+  CLAIM_ASSESSOR
+  CLAIM_SUPERVISOR
+  CLAIM_MANAGER
+  INSURER
+  DEVELOPER
+  SUPER_ADMIN
+
+  @@map("user_role")
+}
+
+model Workspace {
+  workspaceId String    @id @default(dbgenerated("gen_random_uuid()")) @map("workspace_id") @db.Uuid
+  name        String    @db.VarChar(255)
+  domain      String?   @db.VarChar(255)
+  planType    String?   @default("starter") @map("plan_type") @db.VarChar(50)
+  apiKey      String    @unique @map("api_key") @db.VarChar(255)
+  apiSecret   String    @map("api_secret") @db.VarChar(255)
+  status      String?   @default("active") @db.VarChar(50)
+  settings    Json?     @default("{}")
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // NEW back-relations
+  rolePermissions  RolePermission[]
+  roleClaimActions RoleClaimAction[]
+
+  @@map("workspaces")
+}
+
+model User {
+  userId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("user_id") @db.Uuid
+  workspaceId  String?   @map("workspace_id") @db.Uuid
+  email        String    @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  firstName    String    @map("first_name") @db.VarChar(100)
+  lastName     String    @map("last_name") @db.VarChar(100)
+  role         UserRole  @default(AGENT) // CHANGED: was String @default("user")
+  // REMOVED: permissions Json? @default("[]")  (rights now come from role_permissions)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  isActive     Boolean?  @default(true) @map("is_active")
+  createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId, role])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW: dynamic permissions per workspace + role + feature
+// One row per workspace + role + feature. No row = no access.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RolePermission {
+  permissionId String    @id @default(dbgenerated("gen_random_uuid()")) @map("permission_id") @db.Uuid
+  workspaceId  String    @map("workspace_id") @db.Uuid
+  role         UserRole
+  feature      String    @db.VarChar(100)
+  canView      Boolean   @default(false) @map("can_view")
+  canCreate    Boolean   @default(false) @map("can_create")
+  canUpdate    Boolean   @default(false) @map("can_update")
+  canDelete    Boolean   @default(false) @map("can_delete")
+  updatedBy    String?   @map("updated_by") @db.Uuid
+  updatedAt    DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [workspaceId], onDelete: Cascade)
+
+  @@unique([workspaceId, role, feature])
+  @@index([workspaceId, role])
+  @@map("role_permissions")
+}
+
+// One row = this role may perform this claim action. No row = denied.
+// claimType '*' = all claim types.
+model RoleClaimAction {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  role        UserRole
+  claimType   String    @default("*") @map("claim_type") @db.VarChar(100)
+  action      String    @db.VarChar(50)
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [workspaceId], onDelete: Cascade)
+
+  @@unique([workspaceId, role, claimType, action])
+  @@index([workspaceId, role])
+  @@map("role_claim_actions")
+}
+
+// Per-user permission overrides. When set, these OVERRIDE the role-based matrix for this specific user.
+// SuperAdmin can grant or restrict individual features per user, independent of their role.
+model UserPermissionOverride {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  feature     String    @db.VarChar(100)
+  canView     Boolean   @default(false) @map("can_view")
+  canCreate   Boolean   @default(false) @map("can_create")
+  canUpdate   Boolean   @default(false) @map("can_update")
+  canDelete   Boolean   @default(false) @map("can_delete")
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  updatedAt   DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workspaceId, userId, feature])
+  @@index([workspaceId, userId])
+  @@map("user_permission_overrides")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXISTING MODELS (unchanged)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Customer {
+  customerId      String    @id @default(dbgenerated("gen_random_uuid()")) @map("customer_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  firstName       String    @map("first_name") @db.VarChar(100)
+  lastName        String    @map("last_name") @db.VarChar(100)
+  email           String?   @unique @db.VarChar(255)
+  phone           String?   @db.VarChar(50)
+  dateOfBirth     DateTime? @map("date_of_birth") @db.Date
+  address         String?
+  city            String?   @db.VarChar(100)
+  state           String?   @db.VarChar(100)
+  zipCode         String?   @map("zip_code") @db.VarChar(20)
+  status          String?   @default("ACTIVE") @db.VarChar(50)
+  customerType    String?   @default("individual") @map("customer_type") @db.VarChar(50)
+  lifetimeValue   Decimal?  @default(0) @map("lifetime_value") @db.Decimal(15, 2)
+  lastContactDate DateTime? @map("last_contact_date") @db.Timestamptz(6)
+  notes           String?
+  createdBy       String?   @map("created_by") @db.Uuid
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?   @map("updated_by") @db.Uuid
+
+  @@map("customers")
+}
+
+model Product {
+  productId     String    @id @default(dbgenerated("gen_random_uuid()")) @map("product_id") @db.Uuid
+  workspaceId   String?   @map("workspace_id") @db.Uuid
+  name          String    @db.VarChar(255)
+  description   String?
+  category      String?   @db.VarChar(100)
+  coverageTypes Json?     @default("[]") @map("coverage_types")
+  pricingModel  String?   @map("pricing_model") @db.VarChar(100)
+  isActive      Boolean?  @default(true) @map("is_active")
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("products")
+}
+
+model Policy {
+  policyId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("policy_id") @db.Uuid
+  workspaceId    String?   @map("workspace_id") @db.Uuid
+  policyNumber   String    @unique @map("policy_number") @db.VarChar(100)
+  customerId     String?   @map("customer_id") @db.Uuid
+  productId      String?   @map("product_id") @db.Uuid
+  policyType     String    @map("policy_type") @db.VarChar(100)
+  status         String?   @default("draft") @db.VarChar(50)
+  effectiveDate  DateTime  @map("effective_date") @db.Date
+  expirationDate DateTime  @map("expiration_date") @db.Date
+  premiumAmount  Decimal   @map("premium_amount") @db.Decimal(15, 2)
+  coverageAmount Decimal   @map("coverage_amount") @db.Decimal(15, 2)
+  deductible     Decimal?  @default(0) @db.Decimal(15, 2)
+  policyData     Json?     @default("{}") @map("policy_data")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("policies")
+}
+
+model PolicyEndorsement {
+  endorsementId     String    @id @default(dbgenerated("gen_random_uuid()")) @map("endorsement_id") @db.Uuid
+  workspaceId       String?   @map("workspace_id") @db.Uuid
+  policyId          String?   @map("policy_id") @db.Uuid
+  endorsementType   String    @map("endorsement_type") @db.VarChar(100)
+  description       String?
+  premiumAdjustment Decimal?  @default(0) @map("premium_adjustment") @db.Decimal(15, 2)
+  effectiveDate     DateTime  @map("effective_date") @db.Date
+  status            String?   @default("pending") @db.VarChar(50)
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  created_by        String?   @db.Uuid
+
+  @@map("policy_endorsements")
+}
+
+model Claim {
+  claimId               String    @id @default(dbgenerated("gen_random_uuid()")) @map("claim_id") @db.Uuid
+  workspaceId           String?   @map("workspace_id") @db.Uuid
+  claimNumber           String    @unique @map("claim_number") @db.VarChar(100)
+  policyId              String?   @map("policy_id") @db.Uuid
+  customerId            String?   @map("customer_id") @db.Uuid
+  claimantName          String    @map("claimant_name") @db.VarChar(255)
+  claimType             String    @map("claim_type") @db.VarChar(100)
+  status                String?   @default("open") @db.VarChar(50)
+  priority              String?   @default("normal") @db.VarChar(20)
+  incidentDate          DateTime  @map("incident_date") @db.Date
+  reportedDate          DateTime  @map("reported_date") @db.Date
+  claimedAmount         Decimal   @map("claimed_amount") @db.Decimal(15, 2)
+  approvedAmount        Decimal?  @default(0) @map("approved_amount") @db.Decimal(15, 2)
+  settlementAmount      Decimal?  @default(0) @map("settlement_amount") @db.Decimal(15, 2)
+  assignedAdjuster      String?   @map("assigned_adjuster") @db.Uuid
+  fraudFlags            Json?     @default("{}") @map("fraud_flags")
+  risk_level            String?   @default("low") @db.VarChar(20)
+  requiresInvestigation Boolean?  @default(false) @map("requires_investigation")
+  claimData             Json?     @default("{}") @map("claim_data")
+  createdAt             DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("claims")
+}
+
+model RiskScoringModel {
+  modelId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("model_id") @db.Uuid
+  workspaceId   String?   @map("workspace_id") @db.Uuid
+  name          String    @db.VarChar(255)
+  version       String    @db.VarChar(50)
+  description   String?
+  modelType     String    @map("model_type") @db.VarChar(100)
+  riskFactors   Json      @map("risk_factors")
+  thresholds    Json      @map("thresholds")
+  modelConfig   Json?     @default("{}") @map("model_config")
+  accuracyScore Decimal?  @map("accuracy_score") @db.Decimal(5, 4)
+  isActive      Boolean?  @default(true) @map("is_active")
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+
+  @@map("risk_scoring_models")
+}
+
+model RiskScore {
+  scoringId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("scoring_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  applicantId     String?   @map("applicant_id") @db.Uuid
+  policyType      String?   @map("policy_type") @db.VarChar(100)
+  baseScore       Decimal?  @map("base_score") @db.Decimal(5, 2)
+  finalScore      Decimal   @map("final_score") @db.Decimal(5, 2)
+  riskCategory    String    @map("risk_category") @db.VarChar(50)
+  factorScores    Json?     @default("{}") @map("factor_scores")
+  recommendations Json?     @default("[]")
+  modelUsed       String?   @map("model_used") @db.Uuid
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("risk_scores")
+}
+
+model Communication {
+  communicationId   String    @id @default(dbgenerated("gen_random_uuid()")) @map("communication_id") @db.Uuid
+  workspaceId       String?   @map("workspace_id") @db.Uuid
+  customerId        String?   @map("customer_id") @db.Uuid
+  communicationType String    @map("communication_type") @db.VarChar(50)
+  subject           String?   @db.VarChar(255)
+  message           String?
+  direction         String    @db.VarChar(20)
+  priority          String?   @default("normal") @db.VarChar(20)
+  status            String?   @default("PENDING") @db.VarChar(50)
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdBy         String?   @map("created_by") @db.Uuid
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("communications")
+}
+
+model FraudInvestigation {
+  investigationId String    @id @default(dbgenerated("gen_random_uuid()")) @map("investigation_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  analysisId      String?   @map("analysis_id") @db.Uuid
+  investigatorId  String?   @map("investigator_id") @db.Uuid
+  status          String?   @default("OPEN") @db.VarChar(50)
+  notes           String?
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("fraud_investigations")
+}
+
+model TelematicsDevice {
+  deviceId             String    @id @default(dbgenerated("gen_random_uuid()")) @map("device_id") @db.Uuid
+  workspaceId          String?   @map("workspace_id") @db.Uuid
+  deviceName           String    @map("device_name") @db.VarChar(255)
+  deviceType           String    @map("device_type") @db.VarChar(100)
+  serialNumber         String    @unique @map("serial_number") @db.VarChar(255)
+  firmwareVersion      String?   @map("firmware_version") @db.VarChar(50)
+  policyId             String?   @map("policy_id") @db.Uuid
+  installationLocation String?   @map("installation_location")
+  installationDate     DateTime? @map("installation_date") @db.Date
+  status               String?   @default("ACTIVE") @db.VarChar(50)
+  lastSeen             DateTime? @map("last_seen") @db.Timestamptz(6)
+  batteryLevel         Int?      @map("battery_level")
+  createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("telematics_devices")
+}
+
+model TelematicsData {
+  dataId             String    @id @default(dbgenerated("gen_random_uuid()")) @map("data_id") @db.Uuid
+  workspaceId        String?   @map("workspace_id") @db.Uuid
+  deviceId           String?   @map("device_id") @db.Uuid
+  policyId           String?   @map("policy_id") @db.Uuid
+  timestamp          DateTime  @db.Timestamptz(6)
+  location           Json?
+  speed              Int?
+  acceleration       Decimal?  @db.Decimal(5, 2)
+  brakingEvents      Int?      @default(0) @map("braking_events")
+  accelerationEvents Int?      @default(0) @map("acceleration_events")
+  nightDriving       Decimal?  @default(0) @map("night_driving") @db.Decimal(5, 2)
+  distanceTravelled  Decimal?  @default(0) @map("distance_travelled") @db.Decimal(10, 2)
+  fuelConsumption    Decimal?  @default(0) @map("fuel_consumption") @db.Decimal(8, 2)
+  createdAt          DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("telematics_data")
+}
+
+model PremiumAdjustment {
+  adjustmentId         String    @id @default(dbgenerated("gen_random_uuid()")) @map("adjustment_id") @db.Uuid
+  workspaceId          String?   @map("workspace_id") @db.Uuid
+  policyId             String?   @map("policy_id") @db.Uuid
+  adjustmentType       String    @map("adjustment_type") @db.VarChar(50)
+  originalPremium      Decimal   @map("original_premium") @db.Decimal(15, 2)
+  adjustedPremium      Decimal   @map("adjusted_premium") @db.Decimal(15, 2)
+  adjustmentPercentage Decimal   @map("adjustment_percentage") @db.Decimal(5, 2)
+  reason               String
+  drivingScore         Decimal?  @map("driving_score") @db.Decimal(5, 2)
+  analysisPoints       Int?      @map("analysis_points")
+  periodDays           Int?      @map("period_days")
+  effectiveDate        DateTime? @default(now()) @map("effective_date") @db.Timestamptz(6)
+  createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  created_by           String?   @db.Uuid
+
+  @@map("premium_adjustments")
+}
+
+model WorkflowDefinition {
+  workflowId      String    @id @default(dbgenerated("gen_random_uuid()")) @map("workflow_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  name            String    @db.VarChar(255)
+  description     String?
+  category        String?   @db.VarChar(100)
+  version         String    @db.VarChar(50)
+  workflowSteps   Json      @map("workflow_steps")
+  approvalRules   Json?     @default("{}") @map("approval_rules")
+  escalationRules Json?     @default("{}") @map("escalation_rules")
+  slaConfig       Json?     @default("{}") @map("sla_config")
+  status          String?   @default("DRAFT") @db.VarChar(50)
+  isActive        Boolean?  @default(true) @map("is_active")
+  createdBy       String?   @map("created_by") @db.Uuid
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("workflow_definitions")
+}
+
+model WorkflowInstance {
+  instanceId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("instance_id") @db.Uuid
+  workspaceId      String?   @map("workspace_id") @db.Uuid
+  workflowId       String?   @map("workflow_id") @db.Uuid
+  entityType       String    @map("entity_type") @db.VarChar(100)
+  entityId         String?   @map("entity_id") @db.Uuid
+  status           String?   @default("PENDING") @db.VarChar(50)
+  priority         String?   @default("normal") @db.VarChar(20)
+  currentStep      String?   @map("current_step") @db.VarChar(255)
+  current_assignee String?   @db.Uuid
+  context_data     Json?     @default("{}")
+  initiated_by     String?   @db.Uuid
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("workflow_instances")
+}
+
+model ComplianceRequirement {
+  requirementId     String    @id @default(dbgenerated("gen_random_uuid()")) @map("requirement_id") @db.Uuid
+  workspaceId       String?   @map("workspace_id") @db.Uuid
+  title             String    @db.VarChar(255)
+  description       String?
+  jurisdiction      String    @db.VarChar(100)
+  category          String    @db.VarChar(100)
+  regulatory_body   String?   @db.VarChar(255)
+  effective_date    DateTime  @db.Date
+  dueDate           DateTime  @map("due_date") @db.Date
+  frequency         String?   @db.VarChar(50)
+  compliance_level  String    @db.VarChar(50)
+  submission_format String?   @db.VarChar(100)
+  status            String?   @default("ACTIVE") @db.VarChar(50)
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("compliance_requirements")
+}
+
+model ReinsuranceTreaty {
+  treatyId         String    @id @default(dbgenerated("gen_random_uuid()")) @map("treaty_id") @db.Uuid
+  workspaceId      String?   @map("workspace_id") @db.Uuid
+  treatyName       String    @map("treaty_name") @db.VarChar(255)
+  treatyType       String    @map("treaty_type") @db.VarChar(100)
+  reinsurerName    String    @map("reinsurer_name") @db.VarChar(255)
+  reinsurerContact Json?     @default("{}") @map("reinsurer_contact")
+  quota_share      Decimal?  @default(0) @db.Decimal(5, 2)
+  surplus_share    Decimal?  @default(0) @db.Decimal(5, 2)
+  attachment_point Decimal?  @default(0) @db.Decimal(15, 2)
+  capacity         Decimal   @db.Decimal(15, 2)
+  premiumRate      Decimal?  @map("premium_rate") @db.Decimal(5, 4)
+  commission_rate  Decimal?  @db.Decimal(5, 4)
+  coverage_lines   Json?     @default("[]")
+  terms_conditions String?
+  status           String?   @default("ACTIVE") @db.VarChar(50)
+  effectiveDate    DateTime  @map("effective_date") @db.Date
+  expirationDate   DateTime  @map("expiration_date") @db.Date
+  created_by       String?   @db.Uuid
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("reinsurance_treaties")
+}
+
+model ApiEndpoint {
+  endpointId     String    @id @default(dbgenerated("gen_random_uuid()")) @map("endpoint_id") @db.Uuid
+  workspaceId    String?   @map("workspace_id") @db.Uuid
+  endpointPath   String    @map("endpoint_path") @db.VarChar(255)
+  httpMethod     String    @map("http_method") @db.VarChar(10)
+  category       String    @db.VarChar(100)
+  description    String?
+  parameters     Json?     @default("[]")
+  requestSchema  Json?     @map("request_schema")
+  responseSchema Json?     @map("response_schema")
+  examples       Json?     @default("{}")
+  rateLimits     Json?     @default("{}") @map("rate_limits")
+  version        String?   @default("v1") @db.VarChar(20)
+  is_public      Boolean?  @default(true)
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("api_endpoints")
+}
+
+model ApiKey {
+  keyId       String    @id @default(dbgenerated("gen_random_uuid()")) @map("key_id") @db.Uuid
+  workspaceId String?   @map("workspace_id") @db.Uuid
+  key_name    String    @db.VarChar(255)
+  api_key     String    @unique @db.VarChar(255)
+  secret_key  String    @db.VarChar(255)
+  permissions Json?     @default("[]")
+  rateLimit   Int?      @default(1000) @map("rate_limit")
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(6)
+  allowed_ips Json?     @default("[]")
+  description String?
+  status      String?   @default("ACTIVE") @db.VarChar(50)
+  lastUsedAt  DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("api_keys")
+}
+
+model SecurityEvent {
+  eventId     String    @id @default(dbgenerated("gen_random_uuid()")) @map("event_id") @db.Uuid
+  workspaceId String?   @map("workspace_id") @db.Uuid
+  eventType   String    @map("event_type") @db.VarChar(100)
+  severity    String?   @default("LOW") @db.VarChar(20)
+  source_ip   String?   @db.Inet
+  userId      String?   @map("user_id") @db.Uuid
+  description String?
+  metadata    Json?     @default("{}")
+  success     Boolean
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("security_events")
+}
+
+model SandboxEnvironment {
+  environment_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId      String?   @map("workspace_id") @db.Uuid
+  environment_name String    @db.VarChar(255)
+  environment_type String    @db.VarChar(100)
+  configuration    Json
+  resources        Json
+  access_urls      Json?     @default("{}")
+  status           String?   @default("CREATING") @db.VarChar(50)
+  template_id      String?   @db.Uuid
+  expires_at       DateTime? @db.Timestamptz(6)
+  last_used        DateTime? @db.Timestamptz(6)
+  deleted_at       DateTime? @db.Timestamptz(6)
+  error_message    String?
+  createdBy        String?   @map("created_by") @db.Uuid
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("sandbox_environments")
+}
+
+model TestSuite {
+  suiteId        String    @id @default(dbgenerated("gen_random_uuid()")) @map("suite_id") @db.Uuid
+  workspaceId    String?   @map("workspace_id") @db.Uuid
+  suite_name     String    @db.VarChar(255)
+  test_type      String    @db.VarChar(100)
+  category       String?   @db.VarChar(100)
+  description    String?
+  testCases      Json      @map("test_cases")
+  configuration  Json?     @default("{}")
+  environment_id String?   @db.Uuid
+  status         String?   @default("DRAFT") @db.VarChar(50)
+  total_tests    Int?      @default(0)
+  passed_tests   Int?      @default(0)
+  failed_tests   Int?      @default(0)
+  skipped_tests  Int?      @default(0)
+  execution_time Decimal?  @db.Decimal(10, 3)
+  last_run_at    DateTime? @db.Timestamptz(6)
+  createdBy      String?   @map("created_by") @db.Uuid
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("test_suites")
+}
+
+model BillingRecord {
+  recordId      String    @id @default(dbgenerated("gen_random_uuid()")) @map("record_id") @db.Uuid
+  workspaceId   String?   @map("workspace_id") @db.Uuid
+  policyId      String?   @map("policy_id") @db.Uuid
+  customerId    String?   @map("customer_id") @db.Uuid
+  billing_type  String    @db.VarChar(50)
+  amount        Decimal   @db.Decimal(15, 2)
+  dueDate       DateTime  @map("due_date") @db.Date
+  paid_date     DateTime? @db.Date
+  status        String?   @default("pending") @db.VarChar(50)
+  paymentMethod String?   @map("payment_method") @db.VarChar(50)
+  transactionId String?   @map("transaction_id") @db.VarChar(255)
+  late_fees     Decimal?  @default(0) @db.Decimal(15, 2)
+  adjustments   Json?     @default("{}")
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("billing_records")
+}
+
+model Document {
+  documentId             String    @id @default(dbgenerated("gen_random_uuid()")) @map("document_id") @db.Uuid
+  workspaceId            String?   @map("workspace_id") @db.Uuid
+  file_name              String    @db.VarChar(255)
+  original_name          String    @db.VarChar(255)
+  file_type              String    @db.VarChar(100)
+  file_size              Int
+  file_url               String
+  document_type          String?   @db.VarChar(100)
+  category               String?   @db.VarChar(100)
+  associated_entity_type String?   @db.VarChar(100)
+  associated_entity_id   String?   @db.Uuid
+  ocr_text               String?
+  metadata               Json?     @default("{}")
+  uploadedBy             String?   @map("uploaded_by") @db.Uuid
+  uploaded_at            DateTime? @default(now()) @db.Timestamptz(6)
+  processed_at           DateTime? @db.Timestamptz(6)
+
+  @@map("documents")
+}
+
+model Quote {
+  quoteId         String    @id @default(dbgenerated("gen_random_uuid()")) @map("quote_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  quoteNumber     String    @unique @map("quote_number") @db.VarChar(100)
+  customerId      String?   @map("customer_id") @db.Uuid
+  productId       String?   @map("product_id") @db.Uuid
+  applicant_data  Json
+  risk_data       Json?     @default("{}")
+  quotedPremium   Decimal   @map("quoted_premium") @db.Decimal(15, 2)
+  coverageAmount  Decimal   @map("coverage_amount") @db.Decimal(15, 2)
+  deductible      Decimal?  @default(0) @db.Decimal(15, 2)
+  effective_date  DateTime? @db.Date
+  expiration_date DateTime? @db.Date
+  status          String?   @default("draft") @db.VarChar(50)
+  pricing_factors Json?     @default("{}")
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("quotes")
+}
+
+model UnderwritingCase {
+  caseId           String    @id @default(dbgenerated("gen_random_uuid()")) @map("case_id") @db.Uuid
+  workspaceId      String?   @map("workspace_id") @db.Uuid
+  customer_id      String?   @db.Uuid
+  policyType       String    @map("policy_type") @db.VarChar(100)
+  application_data Json
+  riskScore        Decimal?  @map("risk_score") @db.Decimal(5, 2)
+  riskCategory     String?   @map("risk_category") @db.VarChar(50)
+  status           String?   @default("pending") @db.VarChar(50)
+  decision         String?   @db.VarChar(50)
+  decision_reason  String?
+  underwriterId    String?   @map("underwriter_id") @db.Uuid
+  reviewed_at      DateTime? @db.Timestamptz(6)
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("underwriting_cases")
+}
+
+model access_control_logs {
+  log_id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id          String?   @db.Uuid
+  resource_type         String    @db.VarChar(100)
+  resource_id           String?   @db.Uuid
+  action                String    @db.VarChar(100)
+  user_id               String?   @db.Uuid
+  permissions_requested Json?     @default("[]")
+  permissions_granted   Json?     @default("[]")
+  granted               Boolean
+  source_ip             String?   @db.Inet
+  user_agent            String?
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model analytics_data {
+  data_id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  metric_name  String    @db.VarChar(100)
+  metric_value Decimal?  @db.Decimal(15, 4)
+  dimensions   Json?     @default("{}")
+  recorded_at  DateTime? @default(now()) @db.Timestamptz(6)
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model api_requests {
+  request_id       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  endpoint         String    @db.VarChar(255)
+  http_method      String    @db.VarChar(10)
+  client_id        String?   @db.VarChar(255)
+  user_id          String?   @db.Uuid
+  ip_address       String?   @db.Inet
+  user_agent       String?
+  status_code      Int?
+  response_time_ms Int?
+  request_size     Int?
+  response_size    Int?
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model audit_logs {
+  log_id       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  table_name   String    @db.VarChar(100)
+  action_type  String    @db.VarChar(50)
+  record_id    String?   @db.VarChar(255)
+  old_values   Json?
+  new_values   Json?
+  performed_by String?   @db.Uuid
+  ip_address   String?   @db.Inet
+  user_agent   String?
+  timestamp    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model claim_documents {
+  document_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id  String?   @db.Uuid
+  claim_id      String?   @db.Uuid
+  document_type String    @db.VarChar(100)
+  file_name     String    @db.VarChar(255)
+  file_size     Int?
+  file_url      String?
+  uploaded_at   DateTime? @default(now()) @db.Timestamptz(6)
+  uploaded_by   String?   @db.Uuid
+}
+
+model compliance_assessments {
+  assessment_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id         String?   @db.Uuid
+  framework            String    @db.VarChar(100)
+  assessment_type      String    @db.VarChar(100)
+  overall_score        Decimal?  @db.Decimal(5, 2)
+  assessment_date      DateTime? @default(now()) @db.Timestamptz(6)
+  assessor_name        String?   @db.VarChar(255)
+  key_findings         String?
+  recommendations      String?
+  next_assessment_date DateTime? @db.Timestamptz(6)
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model compliance_controls {
+  control_id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id          String?   @db.Uuid
+  framework             String    @db.VarChar(100)
+  control_name          String    @db.VarChar(255)
+  control_category      String    @db.VarChar(100)
+  implementation_status String?   @default("NOT_IMPLEMENTED") @db.VarChar(50)
+  last_assessed         DateTime? @db.Timestamptz(6)
+  assessed_by           String?   @db.Uuid
+  evidence_location     String?
+  notes                 String?
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model compliance_reports {
+  report_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id      String?   @db.Uuid
+  requirement_id    String?   @db.Uuid
+  report_period     String    @db.VarChar(100)
+  submission_data   Json
+  attachments       Json?     @default("[]")
+  submission_status String    @db.VarChar(50)
+  is_compliant      Boolean
+  overdue           Boolean?  @default(false)
+  submitted_by      String?   @db.Uuid
+  notes             String?
+  submitted_at      DateTime? @db.Timestamptz(6)
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model compliance_tasks {
+  task_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  requirement_id   String?   @db.Uuid
+  report_id        String?   @db.Uuid
+  task_type        String    @db.VarChar(100)
+  priority         String?   @default("normal") @db.VarChar(20)
+  status           String?   @default("PENDING") @db.VarChar(50)
+  assigned_to      String?   @db.Uuid
+  due_date         DateTime? @db.Timestamptz(6)
+  completed_at     DateTime? @db.Timestamptz(6)
+  notes            String?
+  completion_notes String?
+  created_by       String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model data_clone_jobs {
+  job_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id   String?   @db.Uuid
+  environment_id String?   @db.Uuid
+  data_types     Json
+  status         String?   @default("PENDING") @db.VarChar(50)
+  records_copied Json?     @default("{}")
+  error_message  String?
+  started_at     DateTime? @db.Timestamptz(6)
+  completed_at   DateTime? @db.Timestamptz(6)
+  created_by     String?   @db.Uuid
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model document_processing_jobs {
+  job_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id  String?   @db.Uuid
+  document_id   String?   @db.Uuid
+  job_type      String    @db.VarChar(100)
+  status        String?   @default("pending") @db.VarChar(50)
+  progress      Int?      @default(0)
+  result        Json?     @default("{}")
+  error_message String?
+  started_at    DateTime? @db.Timestamptz(6)
+  completed_at  DateTime? @db.Timestamptz(6)
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model driving_behavior {
+  analysis_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id        String?   @db.Uuid
+  device_id           String?   @db.Uuid
+  policy_id           String?   @db.Uuid
+  analysis_date       DateTime  @db.Timestamptz(6)
+  speed_score         Int?
+  acceleration_score  Int?
+  braking_score       Int?
+  night_driving_score Int?
+  overall_score       Int
+  risk_level          String    @db.VarChar(20)
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model facultative_quotes {
+  quote_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id       String?   @db.Uuid
+  policy_type        String    @db.VarChar(100)
+  coverage_amount    Decimal   @db.Decimal(15, 2)
+  quoted_rate        Decimal   @db.Decimal(5, 4)
+  quoted_amount      Decimal   @db.Decimal(15, 2)
+  commission_rate    Decimal   @db.Decimal(5, 4)
+  commission_amount  Decimal   @db.Decimal(15, 2)
+  net_cost           Decimal   @db.Decimal(15, 2)
+  risk_details       Json
+  special_conditions Json?     @default("{}")
+  validity_period    String?   @db.VarChar(50)
+  status             String?   @default("QUOTED") @db.VarChar(50)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  expires_at         DateTime? @db.Timestamptz(6)
+}
+
+model fraud_analysis {
+  analysis_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id          String?   @db.Uuid
+  claim_id              String?   @db.Uuid
+  fraud_score           Int
+  risk_level            String    @db.VarChar(20)
+  risk_factors          Json?     @default("[]")
+  alerts                Json?     @default("[]")
+  recommendations       Json?     @default("[]")
+  investigation_id      String?   @db.Uuid
+  investigation_status  String?   @db.VarChar(50)
+  investigator_assigned String?   @db.Uuid
+  analysis_date         DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model generated_reports {
+  report_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id        String?   @db.Uuid
+  report_type         String    @db.VarChar(100)
+  report_data         Json
+  jurisdiction        String?   @db.VarChar(100)
+  date_range          Json?
+  include_attachments Boolean?  @default(false)
+  generated_by        String?   @db.Uuid
+  generated_at        DateTime? @default(now()) @db.Timestamptz(6)
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model integration_tests {
+  test_id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  partner_id   String?   @db.Uuid
+  test_type    String    @db.VarChar(100)
+  test_results Json
+  status       String    @db.VarChar(50)
+  tested_by    String?   @db.Uuid
+  tested_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model kpi_tracking {
+  kpi_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id    String?   @db.Uuid
+  kpi_name        String    @db.VarChar(100)
+  current_value   Decimal?  @db.Decimal(15, 4)
+  target_value    Decimal?  @db.Decimal(15, 4)
+  unit            String?   @db.VarChar(50)
+  category        String?   @db.VarChar(100)
+  last_calculated DateTime? @default(now()) @db.Timestamptz(6)
+  trend           String?   @db.VarChar(20)
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model marketplace_partners {
+  partner_id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id          String?   @db.Uuid
+  partner_name          String    @db.VarChar(255)
+  category              String    @db.VarChar(100)
+  integration_type      String    @db.VarChar(100)
+  api_endpoint          String?
+  webhook_url           String?
+  authentication_config Json?     @default("{}")
+  api_quota             Json?     @default("{}")
+  commission_structure  Json?     @default("{}")
+  contract_terms        Json?     @default("{}")
+  contact_info          Json?     @default("{}")
+  status                String?   @default("PENDING") @db.VarChar(50)
+  rating                Decimal?  @default(0) @db.Decimal(3, 2)
+  monthly_volume        Decimal?  @default(0) @db.Decimal(15, 2)
+  contract_start        DateTime? @db.Date
+  contract_end          DateTime? @db.Date
+  last_tested_at        DateTime? @db.Timestamptz(6)
+  created_by            String?   @db.Uuid
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model partner_api_keys {
+  key_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id    String?   @db.Uuid
+  partner_id      String?   @db.Uuid
+  key_name        String    @db.VarChar(255)
+  api_key         String    @unique @db.VarChar(255)
+  secret_key      String    @db.VarChar(255)
+  permissions     Json?     @default("[]")
+  expiration_date DateTime? @db.Timestamptz(6)
+  status          String?   @default("ACTIVE") @db.VarChar(50)
+  last_used_at    DateTime? @db.Timestamptz(6)
+  created_by      String?   @db.Uuid
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model partner_transactions {
+  transaction_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id      String?   @db.Uuid
+  partner_id        String?   @db.Uuid
+  transaction_type  String    @db.VarChar(100)
+  reference_id      String?   @db.VarChar(255)
+  amount            Decimal   @db.Decimal(15, 2)
+  currency          String?   @default("USD") @db.VarChar(10)
+  commission_amount Decimal?  @default(0) @db.Decimal(15, 2)
+  net_amount        Decimal   @db.Decimal(15, 2)
+  status            String?   @default("PENDING") @db.VarChar(50)
+  metadata          Json?     @default("{}")
+  partner_response  Json?     @default("{}")
+  error_message     String?
+  callback_url      String?
+  processed_at      DateTime? @db.Timestamptz(6)
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model payment_methods {
+  method_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  customer_id  String?   @db.Uuid
+  method_type  String    @db.VarChar(50)
+  provider     String?   @db.VarChar(100)
+  last_four    String?   @db.VarChar(4)
+  is_default   Boolean?  @default(false)
+  expires_at   DateTime? @db.Date
+  status       String?   @default("active") @db.VarChar(50)
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model performance_tests {
+  test_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id    String?   @db.Uuid
+  test_name       String    @db.VarChar(255)
+  target_endpoint String
+  load_profile    Json
+  ramp_up_time    Int
+  peak_load       Int
+  duration        Int
+  environment_id  String?   @db.Uuid
+  status          String?   @default("SCHEDULED") @db.VarChar(50)
+  results         Json?     @default("{}")
+  created_by      String?   @db.Uuid
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  started_at      DateTime? @db.Timestamptz(6)
+  completed_at    DateTime? @db.Timestamptz(6)
+}
+
+model quote_comparisons {
+  comparison_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id    String?   @db.Uuid
+  customer_id     String?   @db.Uuid
+  quotes          Json
+  comparison_data Json?     @default("{}")
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model rate_limits {
+  limit_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id       String?   @db.Uuid
+  client_id          String?   @db.VarChar(255)
+  endpoint           String?   @db.VarChar(255)
+  rate_limit         Int
+  window_size        Int
+  current_usage      Int?      @default(0)
+  remaining_requests Int?
+  reset_time         DateTime? @db.Timestamptz(6)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model reinsurance_cessions {
+  cession_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id      String?   @db.Uuid
+  policy_id         String?   @db.Uuid
+  treaty_id         String?   @db.Uuid
+  cession_type      String    @db.VarChar(50)
+  ceded_amount      Decimal   @db.Decimal(15, 2)
+  ceded_premium     Decimal   @db.Decimal(15, 2)
+  commission_rate   Decimal?  @db.Decimal(5, 4)
+  commission_amount Decimal?  @default(0) @db.Decimal(15, 2)
+  net_ceded_premium Decimal   @db.Decimal(15, 2)
+  attachment_point  Decimal?  @db.Decimal(15, 2)
+  calculated_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model reinsurance_recoveries {
+  recovery_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id        String?   @db.Uuid
+  original_claim_id   String?   @db.Uuid
+  treaty_id           String?   @db.Uuid
+  claim_amount        Decimal   @db.Decimal(15, 2)
+  recovery_amount     Decimal   @db.Decimal(15, 2)
+  recovery_percentage Decimal?  @db.Decimal(5, 2)
+  recovery_rate       Decimal   @db.Decimal(5, 4)
+  status              String?   @default("PENDING") @db.VarChar(50)
+  notes               String?
+  processed_at        DateTime? @db.Timestamptz(6)
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model resource_usage {
+  usage_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  environment_id   String?   @db.Uuid
+  resource_type    String    @db.VarChar(100)
+  allocated_amount Decimal   @db.Decimal(15, 2)
+  used_amount      Decimal?  @default(0) @db.Decimal(15, 2)
+  date_recorded    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model risk_factors {
+  factor_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  case_id      String?   @db.Uuid
+  factor_name  String    @db.VarChar(100)
+  factor_value Json
+  weight       Decimal?  @default(1.0) @db.Decimal(5, 2)
+  score        Decimal?  @db.Decimal(5, 2)
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sandbox_activity_logs {
+  log_id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id   String?   @db.Uuid
+  environment_id String?   @db.Uuid
+  activity_type  String    @db.VarChar(100)
+  description    String
+  status         String?   @db.VarChar(50)
+  metadata       Json?     @default("{}")
+  performed_by   String?   @db.Uuid
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sandbox_data_snapshots {
+  snapshot_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id   String?   @db.Uuid
+  environment_id String?   @db.Uuid
+  data_type      String    @db.VarChar(100)
+  record_count   Json
+  snapshot_date  DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sandbox_metrics {
+  metric_id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id   String?   @db.Uuid
+  environment_id String?   @db.Uuid
+  metric_type    String    @db.VarChar(100)
+  metric_value   Decimal   @db.Decimal(15, 4)
+  unit           String?   @db.VarChar(50)
+  recorded_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sandbox_templates {
+  template_id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  template_name    String    @db.VarChar(255)
+  description      String?
+  environment_type String    @db.VarChar(100)
+  configuration    Json
+  resources        Json
+  estimated_cost   Decimal?  @db.Decimal(10, 2)
+  popularity_score Int?      @default(0)
+  is_public        Boolean?  @default(false)
+  created_by       String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sdk_generations {
+  sdk_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  language         String    @db.VarChar(50)
+  version          String?   @default("v1") @db.VarChar(20)
+  code             String
+  include_examples Boolean?  @default(true)
+  generated_by     String?   @db.Uuid
+  generated_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model security_alerts {
+  alert_id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id       String?   @db.Uuid
+  alert_type         String    @db.VarChar(100)
+  severity           String    @db.VarChar(20)
+  title              String    @db.VarChar(255)
+  description        String?
+  affected_resources Json?     @default("[]")
+  source_ip          String?   @db.Inet
+  user_id            String?   @db.Uuid
+  status             String?   @default("OPEN") @db.VarChar(50)
+  assigned_to        String?   @db.Uuid
+  resolved_at        DateTime? @db.Timestamptz(6)
+  resolution_notes   String?
+  created_by         String?   @db.Uuid
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model security_scans {
+  scan_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  scan_type        String    @db.VarChar(100)
+  target_areas     Json?     @default("[]")
+  status           String    @db.VarChar(50)
+  results          Json?     @default("{}")
+  security_score   Int?
+  error_message    String?
+  started_at       DateTime? @db.Timestamptz(6)
+  completed_at     DateTime? @db.Timestamptz(6)
+  duration_seconds Int?
+  created_by       String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model system_health_checks {
+  check_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id      String?   @db.Uuid
+  component         String    @db.VarChar(100)
+  status            String    @db.VarChar(50)
+  last_check        DateTime? @default(now()) @db.Timestamptz(6)
+  response_time_ms  Int?
+  uptime_percentage Decimal?  @db.Decimal(5, 2)
+  details           Json?     @default("{}")
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model test_executions {
+  execution_id     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  suite_id         String?   @db.Uuid
+  environment_id   String?   @db.Uuid
+  status           String    @db.VarChar(50)
+  execution_config Json?     @default("{}")
+  execution_time   Decimal?  @db.Decimal(10, 3)
+  error_message    String?
+  started_at       DateTime? @db.Timestamptz(6)
+  completed_at     DateTime? @db.Timestamptz(6)
+  created_by       String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model test_reports {
+  report_id       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id    String?   @db.Uuid
+  report_type     String    @db.VarChar(100)
+  report_data     Json
+  date_range      Json?
+  include_details Boolean?  @default(false)
+  format          String?   @default("json") @db.VarChar(20)
+  generated_by    String?   @db.Uuid
+  generated_at    DateTime? @default(now()) @db.Timestamptz(6)
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model test_results {
+  result_id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id   String?   @db.Uuid
+  execution_id   String?   @db.Uuid
+  test_case_name String    @db.VarChar(255)
+  test_case_id   String?   @db.VarChar(255)
+  status         String    @db.VarChar(50)
+  execution_time Decimal?  @db.Decimal(10, 3)
+  error_message  String?
+  screenshots    Json?     @default("[]")
+  logs           Json?     @default("{}")
+  metadata       Json?     @default("{}")
+  started_at     DateTime? @db.Timestamptz(6)
+  completed_at   DateTime? @db.Timestamptz(6)
+}
+
+model user_sessions {
+  session_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String?   @db.Uuid
+  workspace_id String?   @db.Uuid
+  token_hash   String    @db.VarChar(255)
+  expires_at   DateTime  @db.Timestamptz(6)
+  ip_address   String?   @db.Inet
+  user_agent   String?
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model webhook_configurations {
+  webhook_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id      String?   @db.Uuid
+  webhook_url       String
+  event_type        String    @db.VarChar(100)
+  secret_key        String?   @db.VarChar(255)
+  retry_attempts    Int?      @default(3)
+  timeout_seconds   Int?      @default(30)
+  filters           Json?     @default("{}")
+  headers           Json?     @default("{}")
+  status            String?   @default("ACTIVE") @db.VarChar(50)
+  last_triggered_at DateTime? @db.Timestamptz(6)
+  failure_count     Int?      @default(0)
+  created_by        String?   @db.Uuid
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model workflow_history {
+  history_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id String?   @db.Uuid
+  instance_id  String?   @db.Uuid
+  step_name    String?   @db.VarChar(255)
+  action_type  String    @db.VarChar(50)
+  performed_by String?   @db.Uuid
+  timestamp    DateTime? @default(now()) @db.Timestamptz(6)
+  details      Json?     @default("{}")
+  comments     String?
+}
+
+model workflow_step_instances {
+  step_instance_id String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspace_id     String?   @db.Uuid
+  instance_id      String?   @db.Uuid
+  step_id          String    @db.VarChar(255)
+  step_name        String    @db.VarChar(255)
+  step_order       Int
+  status           String?   @default("PENDING") @db.VarChar(50)
+  assigned_to      String?   @db.Uuid
+  due_date         DateTime? @db.Timestamptz(6)
+  completed_at     DateTime? @db.Timestamptz(6)
+  comments         String?
+  step_data        Json?     @default("{}")
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
